@@ -104,6 +104,123 @@ def speculative_sampling(prefix : torch.Tensor, approx_model : torch.nn.Module, 
 
 
 @torch.no_grad()
+def speculative_sampling_avl(prefix: torch.Tensor, approx_model: torch.nn.Module, target_model: torch.nn.Module,
+                                   max_len: int, gamma_init: int = 4, min_gamma: int = 1, max_gamma: int = 8,
+                                   temperature: float = 1, top_k: int = 0, top_p: float = 0,
+                                   verbose: bool = False, random_seed: int = None) -> torch.Tensor:
+    """
+    Optimized speculative sampling with dynamic gamma adjustment using a 2-bit branch predictor.
+
+    Args:
+        prefix (torch.Tensor): Input sequence (batch_size=1, seq_len).
+        approx_model (torch.nn.Module): The smaller approximate model.
+        target_model (torch.nn.Module): The larger target model.
+        max_len (int): Maximum number of tokens to generate.
+        gamma_init (int): Initial speculative token count.
+        min_gamma (int): Minimum speculative token count.
+        max_gamma (int): Maximum speculative token count.
+        temperature (float, optional): Sampling temperature.
+        top_k (int, optional): Top-k sampling parameter.
+        top_p (float, optional): Top-p (nucleus) sampling parameter.
+        verbose (bool, optional): Enables verbose output.
+        random_seed (int, optional): Random seed for reproducibility.
+
+    Returns:
+        torch.Tensor: Generated tokens (batch_size=1, total_seq_len).
+    """
+    seq_len = prefix.shape[1]
+    T = seq_len + max_len
+
+    assert prefix.shape[0] == 1, "Input batch size must be 1."
+    assert approx_model.device == target_model.device, "Models must be on the same device."
+
+    device = target_model.device
+
+    approx_model_cache = KVCacheModel(approx_model, temperature, top_k, top_p)
+    target_model_cache = KVCacheModel(target_model, temperature, top_k, top_p)
+
+    # Initialize 2-bit branch predictor (0: SN, 1: WN, 2: WT, 3: ST)
+    predictor_state = 2  # Start at Weakly Taken
+    gamma = gamma_init
+
+    resample_count = 0
+    target_sample_count = 0
+    accepted_count = 0
+
+    while prefix.shape[1] < T:
+        prefix_len = prefix.shape[1]
+
+        # Generate speculative tokens using the approximate model
+        x = approx_model_cache.generate(prefix, gamma)
+        _ = target_model_cache.generate(x, 1)
+
+        n = prefix_len + gamma - 1
+        tokens_accepted = True
+
+        for i in range(gamma):
+            if random_seed:
+                torch.manual_seed(random_seed)
+            r = torch.rand(1, device=device)
+            j = x[:, prefix_len + i]
+
+            # Acceptance probability
+            accept_prob = (target_model_cache._prob_history[:, prefix_len + i - 1, j]) / \
+                          (approx_model_cache._prob_history[:, prefix_len + i - 1, j])
+
+            if r > accept_prob:
+                # Token rejected
+                n = prefix_len + i - 1
+                tokens_accepted = False
+                break
+            else:
+                if verbose:
+                    print(f"Approx model token accepted {j[0]}: \033[31m{Decoder().decode(torch.tensor([j]))}\033[0m")
+                accepted_count += 1
+
+        # Update branch predictor state
+        if tokens_accepted:
+            if predictor_state < 3:
+                predictor_state += 1
+        else:
+            if predictor_state > 0:
+                predictor_state -= 1
+
+        # Adjust gamma based on predictor state
+        if predictor_state <= 1:
+            gamma = max(min_gamma, gamma - 1)
+        else:
+            gamma = min(max_gamma, gamma + 1)
+
+        # Roll back caches to the accepted sequence length
+        prefix = x[:, :n + 1]
+        approx_model_cache.rollback(n + 1)
+        target_model_cache.rollback(n + 1)
+
+        if n < prefix_len + gamma - 1:
+            # Resample from target model
+            t = sample(max_fn(target_model_cache._prob_history[:, n, :] -
+                              approx_model_cache._prob_history[:, n, :]))
+            if verbose:
+                print(f"Target model resamples at position {n}: \033[34m{Decoder().decode(t)}\033[0m")
+            resample_count += 1
+            target_model_cache.rollback(n + 1)
+        else:
+            # All tokens accepted; sample next token from target model
+            t = sample(target_model_cache._prob_history[:, -1, :])
+            if verbose:
+                print(f"Target model samples at position {n}: \033[35m{Decoder().decode(t)}\033[0m")
+            target_sample_count += 1
+            target_model_cache.rollback(n + 2)
+
+        prefix = torch.cat((prefix, t), dim=1)
+
+    if verbose:
+        print(f"Generated {prefix.shape[-1] - seq_len} tokens. "
+              f"Accepted: {accepted_count}, Target samples: {target_sample_count}, Resamples: {resample_count}")
+    return prefix
+
+
+@torch.no_grad()
 def speculative_sampling_v2(prefix : torch.Tensor, approx_model : torch.nn.Module, target_model : torch.nn.Module, 
                          max_len : int , gamma : int = 4,
                          temperature : float = 1, top_k : int = 0, top_p : float = 0, random_seed : int = None) -> torch.Tensor:
