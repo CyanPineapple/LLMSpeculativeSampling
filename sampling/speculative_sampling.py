@@ -172,10 +172,10 @@ def speculative_sampling_avl(prefix: torch.Tensor, approx_model: torch.nn.Module
                 n = prefix_len + i - 1
                 tokens_accepted = False
                 break
-            else:
-                if verbose:
-                    print(f"Approx model token accepted {j[0]}: \033[31m{Decoder().decode(torch.tensor([j]))}\033[0m")
-                accepted_count += 1
+
+            if verbose:
+                print(f"Approx model token accepted {j[0]}: \033[31m{Decoder().decode(torch.tensor([j]))}\033[0m")
+            accepted_count += 1
 
         # Update branch predictor state
         if tokens_accepted:
@@ -185,11 +185,6 @@ def speculative_sampling_avl(prefix: torch.Tensor, approx_model: torch.nn.Module
             if predictor_state > 0:
                 predictor_state -= 1
 
-        # Adjust gamma based on predictor state
-        if predictor_state <= 1:
-            gamma = max(min_gamma, gamma - 1)
-        else:
-            gamma = min(max_gamma, gamma + 1)
 
         # Roll back caches to the accepted sequence length
         prefix = x[:, :n + 1]
@@ -198,8 +193,7 @@ def speculative_sampling_avl(prefix: torch.Tensor, approx_model: torch.nn.Module
 
         if n < prefix_len + gamma - 1:
             # Resample from target model
-            t = sample(max_fn(target_model_cache._prob_history[:, n, :] -
-                              approx_model_cache._prob_history[:, n, :]))
+            t = sample(max_fn(target_model_cache._prob_history[:, n, :] - approx_model_cache._prob_history[:, n, :]))
             if verbose:
                 print(f"Target model resamples at position {n}: \033[34m{Decoder().decode(t)}\033[0m")
             resample_count += 1
@@ -213,6 +207,17 @@ def speculative_sampling_avl(prefix: torch.Tensor, approx_model: torch.nn.Module
             target_model_cache.rollback(n + 2)
 
         prefix = torch.cat((prefix, t), dim=1)
+
+        # Adjust gamma based on predictor state
+        if predictor_state <= 1:
+            gamma = max(min_gamma, gamma - 1)
+        else:
+            gamma = min(max_gamma, gamma + 1)
+
+
+
+
+
 
     if verbose:
         print(f"Generated {prefix.shape[-1] - seq_len} tokens. "

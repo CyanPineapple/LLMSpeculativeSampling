@@ -93,6 +93,7 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
                                                        torch_dtype=torch.float16,
                                                        device_map="auto",
                                                        trust_remote_code=True)
+
     print("finish loading models")
     
     input_ids = tokenizer.encode(input_text, return_tensors='pt').to(torch_device)
@@ -118,19 +119,23 @@ def generate(input_text, approx_model_name, target_model_name, num_tokens=20, ga
         benchmark(autoregressive_sampling, "AS_small", use_profiling,
                   input_ids, small_model, num_tokens, top_k = top_k, top_p=top_p)
     
-    # torch.manual_seed(123)
-    # output = speculative_sampling_v2(input_ids, small_model, large_model, num_tokens, top_k = top_k, top_p=top_p, random_seed = random_seed)
-    # generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    # sd_color_print(f"deepmind's speculative_sampling: {generated_text}")   
-
     torch.manual_seed(123)
-    output = speculative_sampling(input_ids, small_model, large_model, num_tokens, gamma = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed, verbose = verbose)
-    generated_text = tokenizer.decode(output[0], skip_special_tokens=False)
+    output = speculative_sampling(input_ids, small_model, large_model, num_tokens, top_k = top_k, top_p=top_p, random_seed = random_seed)
+    generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
     sd_color_print(f"deepmind's speculative_sampling: {generated_text}")   
-    
+
     if use_benchmark:
         benchmark(speculative_sampling, "SP", use_profiling,
                   input_ids, small_model, large_model, max_len = num_tokens, gamma = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed)
+
+    torch.manual_seed(123)
+    output = speculative_sampling_avl(input_ids, small_model, large_model, num_tokens, gamma_init = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed, verbose = verbose)
+    generated_text = tokenizer.decode(output[0], skip_special_tokens=False)
+    sd_color_print(f"AVL speculative_sampling: {generated_text}")   
+    
+    if use_benchmark:
+        benchmark(speculative_sampling_avl, "AVL_SP", use_profiling,
+                  input_ids, small_model, large_model, max_len = num_tokens, gamma_init = gamma, top_k = top_k, top_p=top_p, random_seed = random_seed)
 
 if __name__ == "__main__":
     args = parse_arguments()
